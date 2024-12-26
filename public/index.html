@@ -66,40 +66,63 @@
           connectButton.disabled = true
           disconnectButton.disabled = false
 
-          // 修改解码器配置，设置 fatal 为 false 以允许处理无效字符
           const decoder = new TextDecoder("utf8", { fatal: false })
           let buffer = ""
+          let partialBuffer = new Uint8Array()
 
-          while (port.readable) {
+          while (port.readable && !isDisconnecting) {
             reader = port.readable.getReader()
             try {
-              while (true) {
+              while (!isDisconnecting) {
                 const { value, done } = await reader.read()
-                if (done) break
+                if (done || isDisconnecting) {
+                  console.log("读取结束")
+                  break
+                }
 
                 try {
-                  // 添加错误处理
-                  const text = decoder.decode(value, { stream: true })
+                  const mergedBuffer = new Uint8Array(partialBuffer.length + value.length)
+                  mergedBuffer.set(partialBuffer)
+                  mergedBuffer.set(value, partialBuffer.length)
+
+                  const text = decoder.decode(mergedBuffer, { stream: true })
                   buffer += text
 
                   const lines = buffer.split("\n")
                   buffer = lines.pop() || ""
 
                   if (lines.length > 0) {
-                    output.textContent += lines.join("\n") + "\n"
+                    const debugInfo = lines
+                      .map((line) => {
+                        const bytes = new TextEncoder().encode(line)
+                        return `${line} (字节长度: ${bytes.length})`
+                      })
+                      .join("\n")
+
+                    output.textContent += debugInfo + "\n"
                     output.scrollTop = output.scrollHeight
                   }
+
+                  partialBuffer = new Uint8Array()
                 } catch (decodeError) {
                   console.error("解码错误:", decodeError)
-                  // 跳过无效数据，继续处理
-                  buffer = ""
+                  partialBuffer = value
                 }
               }
             } catch (readError) {
-              console.error("读取错误:", readError)
-              break
+              if (!isDisconnecting) {
+                console.error("读取错误:", readError)
+              }
             } finally {
-              reader.releaseLock()
+              try {
+                reader.releaseLock()
+              } catch (e) {
+                console.warn("释放 reader lock 时出错:", e)
+              }
+            }
+
+            if (isDisconnecting) {
+              break
             }
           }
         } catch (error) {
@@ -107,65 +130,97 @@
           output.textContent += "\nError: " + error + "\n"
         }
       }
-      // 优化的断开连接逻辑
+
       async function disconnect() {
-        if (isDisconnecting) return
+        if (isDisconnecting) {
+          console.log("已经在断开连接中...")
+          return
+        }
 
         console.log("开始断开连接...")
         isDisconnecting = true
 
-        // 添加超时处理
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("断开连接超时")), 3000)
-        })
-
         try {
-          await Promise.race([
-            (async () => {
-              // 1. 先取消读取
-              if (reader) {
-                try {
-                  await reader.cancel()
-                  console.log("Reader cancelled")
-                } catch (err) {
-                  console.warn("取消 reader 时出错:", err)
-                }
-              }
-
-              // 2. 短暂等待
-              await new Promise((resolve) => setTimeout(resolve, 50))
-
-              // 3. 关闭端口
-              if (port) {
-                try {
-                  await port.close()
-                  console.log("Port closed")
-                } catch (err) {
-                  console.warn("关闭端口时出错:", err)
-                }
-              }
-            })(),
-            timeoutPromise,
-          ])
-
-          // 4. 更新状态
-          status.textContent = "已断开连接"
+          status.textContent = "正在断开..."
           status.className = "status disconnected"
+
+          if (reader) {
+            try {
+              console.log("正在取消 reader...")
+              await reader.cancel()
+              console.log("Reader 已取消")
+            } catch (err) {
+              console.warn("取消 reader 时出错:", err)
+            }
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 100))
+
+          if (port) {
+            try {
+              console.log("正在关闭端口...")
+              await port.close()
+              console.log("端口已关闭")
+              port = null
+            } catch (err) {
+              console.warn("关闭端口时出错:", err)
+            }
+          }
+
+          status.textContent = "已断开连接"
           connectButton.disabled = false
           disconnectButton.disabled = true
-
-          // 5. 清理变量
-          reader = null
-          port = null
         } catch (error) {
           console.error("断开连接时发生错误:", error)
-          // 强制刷新页面
-          window.location.reload()
         } finally {
+          reader = null
+          port = null
           isDisconnecting = false
           console.log("断开连接完成")
         }
       }
+
+      function forceDisconnect() {
+        console.log("强制断开连接...")
+
+        if (reader) {
+          try {
+            reader.releaseLock()
+          } catch (e) {
+            console.warn("强制释放 reader 失败:", e)
+          }
+          reader = null
+        }
+
+        if (port) {
+          try {
+            port.close()
+          } catch (e) {
+            console.warn("强制关闭端口失败:", e)
+          }
+          port = null
+        }
+
+        status.textContent = "已断开连接"
+        status.className = "status disconnected"
+        connectButton.disabled = false
+        disconnectButton.disabled = true
+        isDisconnecting = false
+      }
+
+      disconnectButton.addEventListener("click", async () => {
+        const timeoutId = setTimeout(() => {
+          console.warn("断开连接超时，执行强制断开")
+          forceDisconnect()
+        }, 3000)
+
+        try {
+          await disconnect()
+        } finally {
+          clearTimeout(timeoutId)
+        }
+      })
+
       clearButton.addEventListener("click", () => {
         output.textContent = ""
         dataBuffer = ""
@@ -174,7 +229,6 @@
       connectButton.addEventListener("click", connect)
       disconnectButton.addEventListener("click", disconnect)
 
-      // 页面卸载时的清理
       window.addEventListener("beforeunload", async (event) => {
         if (port) {
           event.preventDefault()
@@ -182,7 +236,6 @@
         }
       })
 
-      // 错误处理
       window.addEventListener("error", async (event) => {
         console.error("Global error:", event.error)
         if (port) {

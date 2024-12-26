@@ -19,12 +19,18 @@ port.on('open', () => {
   sendInterval = setInterval(() => {
     const message = `当前时间: ${new Date().toLocaleTimeString()}\n`
     const buffer = Buffer.from(message, 'utf8')
+
+    if (buffer.length !== Buffer.byteLength(message, 'utf8')) {
+      console.error('数据编码异常')
+      return
+    }
+
     port.write(buffer, (err) => {
       if (err) {
         console.error('发送错误:', err.message)
         clearInterval(sendInterval)
       } else {
-        console.log('已发送:', message.trim())
+        console.log('已发送:', message.trim(), '字节长度:', buffer.length)
       }
     })
   }, 1000)
@@ -32,7 +38,8 @@ port.on('open', () => {
 
 // 监听数据接收
 port.on('data', (data) => {
-  console.log('接收到数据:', data.toString())
+  const received = data.toString('utf8')
+  console.log('接收到数据:', received, '字节长度:', data.length)
 })
 
 // 监听端口关闭
