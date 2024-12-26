@@ -1,7 +1,7 @@
 const { SerialPort } = require('serialport')
 
 const port = new SerialPort({
-  path: '/dev/cu.PL2303G-USBtoUART1320',
+  path: '/dev/cu.PL2303G-USBtoUART1310',
   baudRate: 9600,
   dataBits: 8,
   parity: 'none',
@@ -47,7 +47,22 @@ port.on('close', () => {
   console.log('串口已关闭')
   if (sendInterval) {
     clearInterval(sendInterval)
+    sendInterval = null
   }
+
+  // 增加延迟时间，确保资源完全释放
+  setTimeout(() => {
+    if (!port.isOpen) {
+      console.log('尝试重新打开串口...')
+      port.open(err => {
+        if (err) {
+          console.error('重新打开串口失败:', err.message)
+        } else {
+          console.log('串口已重新打开')
+        }
+      })
+    }
+  }, 2000) // 增加延迟到 2 秒
 })
 
 // 监听错误
@@ -56,6 +71,17 @@ port.on('error', (err) => {
   if (sendInterval) {
     clearInterval(sendInterval)
   }
+
+  // 错误发生后等待一段时间再尝试重新打开
+  setTimeout(() => {
+    if (!port.isOpen) {
+      port.open(err => {
+        if (err) {
+          console.error('重新打开串口失败:', err.message)
+        }
+      })
+    }
+  }, 2000)
 })
 
 // 优雅退出
@@ -68,4 +94,27 @@ process.on('SIGINT', () => {
     console.log('串口已关闭')
     process.exit()
   })
+})
+
+process.on('exit', () => {
+  if (port.isOpen) {
+    port.close()
+  }
+})
+
+process.on('SIGTERM', () => {
+  if (port.isOpen) {
+    port.close(() => {
+      process.exit(0)
+    })
+  }
+})
+
+process.on('uncaughtException', (err) => {
+  console.error('未捕获的异常:', err)
+  if (port.isOpen) {
+    port.close(() => {
+      process.exit(1)
+    })
+  }
 })
